@@ -1,0 +1,61 @@
+# 每 30 分钟检查 backlashjournal.com 是否在线。失败 → 这次运行失败 → GitHub 发邮件给仓库主人。
+name: Uptime
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # 每月一次的保活提交要用
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check pages
+        run: |
+          # 每行：网址 和 页面里必须出现的一段文字（防止返回 200 却是错误页）
+          cat > checks.txt <<'LIST'
+          https://backlashjournal.com/ Backlash
+          https://backlashjournal.com/zh/ Backlash
+          https://backlashjournal.com/guides/ fmz
+          https://backlashjournal.com/search/ pagefind-ui.css
+          https://backlashjournal.com/pagefind/pagefind-ui.js PagefindUI
+          https://backlashjournal.com/sitemap.xml <urlset
+          https://backlashjournal.com/admin/ sveltia
+          LIST
+          check() {
+            fail=0
+            while read -r url marker; do
+              [ -z "$url" ] && continue
+              body=$(curl -sS -L -m 20 -A "backlash-journal-uptime (+https://github.com/Justinwangyi/backlash-journal-status)" -w '\n%{http_code}' "$url" 2>&1) || true
+              code=$(printf '%s' "$body" | tail -n1)
+              if [ "$code" != "200" ] || ! printf '%s' "$body" | grep -qi -- "$marker"; then
+                echo "✗ $url → HTTP $code（或页面里没有「$marker」）"; fail=1
+              else
+                echo "✓ $url"
+              fi
+            done < checks.txt
+            return $fail
+          }
+          if check; then exit 0; fi
+          echo "第一次检查有失败，60 秒后重试…"; sleep 60
+          check
+
+  heartbeat:
+    # 每月 1 号 0 点那一轮提交一次日期，避免 GitHub 因 60 天无活动停掉定时任务
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Monthly heartbeat
+        run: |
+          if [ "$(date -u +%d%H)" != "0100" ] || [ "$(date -u +%M)" -ge 30 ]; then echo "not heartbeat time"; exit 0; fi
+          date -u +%Y-%m-%dT%H:%MZ > heartbeat.txt
+          git config user.name "backlash-journal-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add heartbeat.txt
+          git commit -m "heartbeat $(date -u +%Y-%m)" && git push
